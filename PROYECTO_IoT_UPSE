@@ -1,0 +1,216 @@
+#include <Adafruit_Sensor.h>
+#include <DHT_U.h>
+#include <WiFi.h>
+#include <PubSubClient.h> // Incluir la librería para suscribirse a MQTT
+#include <ESP32Servo.h> // Incluir la librería Servo
+#include <FastLED.h> // Incluir la librería FastLED
+
+// Definición de pines
+#define DHTPIN1 0  // DHT en puerto 0 del ESP32
+#define DHTPIN2 2  // DHT en puerto 2 del ESP32
+#define DHTPIN3 4  // DHT en puerto 4 del ESP32
+#define LED 17
+#define SERVO_PIN 19 // pin del servomotor
+#define LED_PIN 39 // Pin para tira de LED WS2812
+#define NUM_LEDS 16 // Número de LEDs en la tira
+
+// Parámetros de DHT
+#define DHTTYPE    DHT22     // DHT 22
+
+DHT_Unified dht1(DHTPIN1, DHTTYPE);
+DHT_Unified dht2(DHTPIN2, DHTTYPE);
+DHT_Unified dht3(DHTPIN3, DHTTYPE);
+
+// Servo motor
+Servo servo;
+
+// Tira de LED WS2812
+CRGB leds[NUM_LEDS];
+
+// Credenciales MQTT 
+const char* ssid = "Wokwi-GUEST"; // Configuración del AP SSID
+const char* password = ""; // Configuración del AP PSK
+const char* mqttServer = "test.mosquitto.org"; //"broker.hivemq.com";
+// ID de cliente nombre de usuario+0001
+const char* clientID = "ujaisldaaasdfgh;laslksdja1"; 
+const char* topic = "Tempdata"; // Publish topic
+
+// Parámetros para usar el retraso sin bloqueo
+unsigned long previousMillis = 0;
+const long interval = 1000;
+String msg1Str = "";      // Búfer de mensajes MQTT1
+String msg2Str = "";      // Búfer de mensajes MQTT2
+String msg3Str = "";      // Búfer de mensajes MQTT3
+float temp1, temp2, temp3, hum1, hum2, hum3;
+
+// Configuración de cliente WiFi y MQTT
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+void setup_wifi() {
+  delay(10);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.println("WiFi conectado");
+  Serial.println("Dirección IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    if (client.connect(clientID)) {
+      Serial.println("MQTT conectado");
+      client.subscribe("lights");
+      client.subscribe("servo"); // Suscripción al topico servo
+      client.subscribe("lights/neopixel"); // Suscripción al topico neopixel
+      Serial.println("Topic suscrito");
+    }
+    else {
+      Serial.print("fallido, rc=");
+      Serial.print(client.state());
+      Serial.println("intentando nuevamente en 5 segundos");
+      delay(5000);  // Esperar 5 segundos y volver a intentarlo
+    }
+  }
+}
+
+// Suscripción a devolución de llamada
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Mensaje llegado al topic: ");
+  Serial.println(topic);
+  Serial.print("Mensaje: ");
+  String data = "";
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+    data += (char)payload[i];
+  }
+  Serial.println();
+  Serial.print("Tamaño del mensaje: ");
+  Serial.println(length);
+  Serial.println();
+  Serial.println("-----------------------");
+  Serial.println(data);
+
+  if (String(topic) == "lights") {
+    if (data == "ON") {
+      Serial.println("LED");
+      digitalWrite(LED, HIGH);
+    }
+    else {
+      digitalWrite(LED, LOW);
+    }
+  }
+  else if (String(topic) == "servo") {
+    int degree = data.toInt(); // Convertir los datos recibidos a un número entero.
+    Serial.print("Moviendo el servo al grado: ");
+    Serial.println(degree);
+    servo.write(degree); // Mover el servo al grado especificado
+  }
+  else if (String(topic) == "lights/neopixel") {
+    int red, green, blue;
+    // Analizar los datos recibidos en valores RGB
+    sscanf(data.c_str(), "%d,%d,%d", &red, &green, &blue); 
+    Serial.print("Establecer el color de NeoPixel en (R,G,B): ");
+    Serial.print(red);
+    Serial.print(",");
+    Serial.print(green);
+    Serial.print(",");
+    Serial.println(blue);
+    // Configurar todos los LED de la tira en el color especificado
+    fill_solid(leds, NUM_LEDS, CRGB(red, green, blue)); 
+    FastLED.show(); // Actualizar la tira de LED con el nuevo color.
+    fill_solid(leds, NUM_LEDS, CRGB(red, green, blue));
+    FastLED.show();
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  // Inicializar el dispositivo.
+  dht1.begin();
+  dht2.begin();
+  dht3.begin();
+
+  pinMode(LED, OUTPUT);
+  digitalWrite(LED, LOW);
+
+  // Configuración del servo
+  servo.attach(SERVO_PIN, 500, 2400);
+  servo.write(0);
+
+  // Configuración de la tira de LEDs WS2812
+  FastLED.addLeds<WS2812, LED_PIN, GRB>(leds, NUM_LEDS);
+
+  setup_wifi();
+  client.setServer(mqttServer, 1883); // Configuración del Servidor MQTT
+  // Definición de la función a la que se llamará cuando se reciba un mensaje.
+  client.setCallback(callback); 
+}
+
+void loop() {
+  if (!client.connected()) { // Si el cliente no está conectado
+    reconnect(); // Try to reconnect
+  }
+  client.loop();
+  unsigned long currentMillis = millis(); // Leer la hora actual
+  // Si la hora actual - última vez > 5 segundos
+  if (currentMillis - previousMillis >= interval) { 
+    previousMillis = currentMillis;
+    // Leer temperatura y humedad
+    sensors_event_t event;
+
+    // Leer temperatura y humedad para el sensor 1
+    dht1.temperature().getEvent(&event);
+    if (!isnan(event.temperature)) {
+      temp1 = event.temperature;
+      Serial.print("Sensor de temperatura 1: ");
+      Serial.println(temp1);
+    }
+    dht1.humidity().getEvent(&event);
+    if (!isnan(event.relative_humidity)) {
+      hum1 = event.relative_humidity;
+      Serial.print("Sensor de humedad 1: ");
+      Serial.println(hum1);
+    }
+
+    // Leer temperatura y humedad para el sensor 2
+    dht2.temperature().getEvent(&event);
+    if (!isnan(event.temperature)) {
+      temp2 = event.temperature;
+      Serial.print("Sensor de temperatura 2: ");
+      Serial.println(temp2);
+    }
+    dht2.humidity().getEvent(&event);
+    if (!isnan(event.relative_humidity)) {
+      hum2 = event.relative_humidity;
+      Serial.print("Sensor de humedad 2: ");
+      Serial.println(hum2);
+    }
+
+    // Leer temperatura y humedad para el sensor 3
+    dht3.temperature().getEvent(&event);
+    if (!isnan(event.temperature)) {
+      temp3 = event.temperature;
+      Serial.print("Sensor de temperatura 3: ");
+      Serial.println(temp3);
+    }
+    dht3.humidity().getEvent(&event);
+    if (!isnan(event.relative_humidity)) {
+      hum3 = event.relative_humidity;
+      Serial.print("Sensor de humedad 3: ");
+      Serial.println(hum3);
+    }
+
+    // Publicar datos en MQTT
+    String message = String(temp1) + "," + String(hum1) + "," +
+                     String(temp2) + "," + String(hum2) + "," +
+                     String(temp3) + "," + String(hum3);
+    client.publish(topic, message.c_str());
+
+    delay(1000); // Esperar 1 segundo antes de la siguiente lectura.
+  }
+}
